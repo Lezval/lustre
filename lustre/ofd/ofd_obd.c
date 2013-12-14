@@ -893,12 +893,6 @@ int ofd_setattr(const struct lu_env *env, struct obd_export *exp,
 		ldlm_resource_putref(res);
 	}
 
-	oinfo->oi_oa->o_valid = OBD_MD_FLID;
-
-	/* Quota release needs uid/gid info */
-	rc = ofd_attr_get(env, fo, &info->fti_attr);
-	obdo_from_la(oinfo->oi_oa, &info->fti_attr,
-		     OFD_VALID_FLAGS | LA_UID | LA_GID);
 	ofd_info2oti(info, oti);
 
 	ofd_counter_incr(exp, LPROC_OFD_STATS_SETATTR, oti->oti_jobid, 1);
@@ -1301,6 +1295,22 @@ int ofd_create(const struct lu_env *env, struct obd_export *exp,
 				       ofd_name(ofd), diff, rc);
 				diff = 0;
 			}
+		}
+
+		/* This can happen if a new OST is formatted and installed
+		 * in place of an old one at the same index.  Instead of
+		 * precreating potentially millions of deleted old objects
+		 * (possibly filling the OST), only precreate the last batch.
+		 * LFSCK will eventually clean up any orphans. LU-14 */
+		if (diff > 5 * OST_MAX_PRECREATE) {
+			diff = OST_MAX_PRECREATE / 2;
+			LCONSOLE_WARN("%s: precreate FID "DOSTID" is over %u "
+				      "larger than the LAST_ID "DOSTID", only "
+				      "precreating the last %u objects.\n",
+				      ofd_name(ofd), POSTID(&oa->o_oi),
+				      5 * OST_MAX_PRECREATE,
+				      POSTID(&oseq->os_oi), diff);
+			ofd_seq_last_oid_set(oseq, ostid_id(&oa->o_oi) - diff);
 		}
 
 		while (diff > 0) {

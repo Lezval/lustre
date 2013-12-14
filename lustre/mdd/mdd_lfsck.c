@@ -997,6 +997,8 @@ static int mdd_lfsck_namespace_reset(const struct lu_env *env,
 	if (rc != 0)
 		GOTO(out, rc);
 
+	lu_object_put(env, &com->lc_obj->do_lu);
+	com->lc_obj = NULL;
 	dto = local_index_find_or_create(env, mdd->mdd_los, root,
 					 lfsck_namespace_name,
 					 S_IFREG | S_IRUGO | S_IWUSR,
@@ -2716,6 +2718,10 @@ int mdd_lfsck_start(const struct lu_env *env, struct md_lfsck *lfsck,
 	}
 
 	if (start->ls_valid & LSV_DRYRUN) {
+		valid |= DOIV_DRYRUN;
+		if (start->ls_flags & LPF_DRYRUN)
+			flags |= DOIF_DRYRUN;
+
 		if ((start->ls_flags & LPF_DRYRUN) &&
 		    !(bk->lb_param & LPF_DRYRUN)) {
 			bk->lb_param |= LPF_DRYRUN;
@@ -2788,8 +2794,11 @@ int mdd_lfsck_start(const struct lu_env *env, struct md_lfsck *lfsck,
 
 trigger:
 	lfsck->ml_args_dir = LUDA_64BITHASH | LUDA_VERIFY;
-	if (bk->lb_param & LPF_DRYRUN)
+	if (bk->lb_param & LPF_DRYRUN) {
 		lfsck->ml_args_dir |= LUDA_VERIFY_DRYRUN;
+		valid |= DOIV_DRYRUN;
+		flags |= DOIF_DRYRUN;
+	}
 
 	if (bk->lb_param & LPF_FAILOUT) {
 		valid |= DOIV_ERROR_HANDLE;

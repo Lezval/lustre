@@ -43,9 +43,10 @@ if [ $(lustre_version_code $SINGLEMDS) -lt $(version_code 2.3.50) ]; then
 	exec $LUSTRE/tests/sanity-quota-old.sh
 fi
 
-# if e2fsprogs support quota feature?
-if [ $(facet_fstype $SINGLEMDS) == ldiskfs ] && \
-	! $DEBUGFS -c -R supported_features | grep -q 'quota'; then
+# Does e2fsprogs support quota feature?
+if [ $(facet_fstype $SINGLEMDS) == ldiskfs ] &&
+	do_facet $SINGLEMDS "! $DEBUGFS -c -R supported_features |
+		grep -q 'quota'"; then
 	skip "e2fsprogs doesn't support quota" && exit 0
 fi
 
@@ -2261,7 +2262,7 @@ test_36() {
 	do_node $mdt0_node mkdir $mntpt/OBJECTS
 	do_node $mdt0_node cp $LUSTRE/tests/admin_quotafile_v2.usr $mntpt/OBJECTS
 	do_node $mdt0_node cp $LUSTRE/tests/admin_quotafile_v2.grp $mntpt/OBJECTS
-	do_node $mdt0_node umount -f $mntpt
+	do_node $mdt0_node umount -d -f $mntpt
 
 	echo "Setup all..."
 	setupall

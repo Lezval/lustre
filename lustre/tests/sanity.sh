@@ -1085,6 +1085,9 @@ test_24x() {
 	mkdir -p $remote_dir/tgt_dir
 	touch $remote_dir/tgt_file
 
+	mrename $remote_dir $DIR/ &&
+		error "rename dir cross MDT works!"
+
 	mrename $DIR/$tdir/src_dir $remote_dir/tgt_dir &&
 		error "rename dir cross MDT works!"
 
@@ -1380,9 +1383,9 @@ exhaust_precreations() {
 	# on the mdt's osc
 	local mdtosc_proc1=$(get_mdtosc_proc_path mds${MDSIDX} $OST)
 	local last_id=$(do_facet mds${MDSIDX} lctl get_param -n \
-        osc.$mdtosc_proc1.prealloc_last_id)
+			osc.$mdtosc_proc1.prealloc_last_id)
 	local next_id=$(do_facet mds${MDSIDX} lctl get_param -n \
-        osc.$mdtosc_proc1.prealloc_next_id)
+			osc.$mdtosc_proc1.prealloc_next_id)
 
 	local mdtosc_proc2=$(get_mdtosc_proc_path mds${MDSIDX})
 	do_facet mds${MDSIDX} lctl get_param osc.$mdtosc_proc2.prealloc*
@@ -2174,7 +2177,7 @@ run_test 31o "duplicate hard links with same filename"
 
 cleanup_test32_mount() {
 	trap 0
-	$UMOUNT $DIR/$tdir/ext2-mountpoint
+	$UMOUNT -d $DIR/$tdir/ext2-mountpoint
 }
 
 test_32a() {
@@ -2382,7 +2385,7 @@ run_test 32p "open d32p/symlink->tmp/symlink->lustre-root/$tfile"
 
 cleanup_testdir_mount() {
 	trap 0
-	$UMOUNT $DIR/$tdir
+	$UMOUNT -d $DIR/$tdir
 }
 
 test_32q() {
@@ -3117,6 +3120,26 @@ test_39m() {
 	done
 }
 run_test 39m "test atime and mtime before 1970"
+
+test_39o() {
+	TESTDIR=$DIR/$tdir/$tfile
+	[ -e $TESTDIR ] && rm -rf $TESTDIR
+	mkdir -p $TESTDIR
+	cd $TESTDIR
+	links1=2
+	ls
+	mkdir a b
+	ls
+	links2=$(stat -c %h .)
+	[ $(($links1 + 2)) != $links2 ] &&
+		error "wrong links count $(($links1 + 2)) != $links2"
+	rmdir b
+	links3=$(stat -c %h .)
+	[ $(($links1 + 1)) != $links3 ] &&
+		error "wrong links count $links1 != $links3"
+	return 0
+}
+run_test 39o "directory cached attributes updated after create ========"
 
 test_40() {
 	dd if=/dev/zero of=$DIR/$tfile bs=4096 count=1
@@ -3925,7 +3948,7 @@ test_54c() {
 	dd if=/dev/zero of=$tdir/tmp bs=`page_size` count=30 || error "dd write"
 	df $tdir
 	dd if=$tdir/tmp of=/dev/zero bs=`page_size` count=30 || error "dd read"
-	$UMOUNT $tdir
+	$UMOUNT -d $tdir
 	losetup -d $loopdev
 	rm $loopdev
 }
@@ -9246,7 +9269,7 @@ changelog_extract_field() {
 		tail -1
 }
 
-test_160() {
+test_160a() {
 	[ $PARALLEL == "yes" ] && skip "skip parallel run" && return
 	remote_mds_nodsh && skip "remote MDS with nodsh" && return
 	[ $(lustre_version_code $SINGLEMDS) -ge $(version_code 2.2.0) ] ||
@@ -9342,7 +9365,38 @@ test_160() {
 		echo "$USERS other changelog users; can't verify off"
 	fi
 }
-run_test 160 "changelog sanity"
+run_test 160a "changelog sanity"
+
+test_160b() { # LU-3587
+	[ $PARALLEL == "yes" ] && skip "skip parallel run" && return
+	remote_mds_nodsh && skip "remote MDS with nodsh" && return
+	[ $(lustre_version_code $SINGLEMDS) -ge $(version_code 2.2.0) ] ||
+		{ skip "Need MDS version at least 2.2.0"; return; }
+
+	local CL_USERS="mdd.$MDT0.changelog_users"
+	local GET_CL_USERS="do_facet $SINGLEMDS $LCTL get_param -n $CL_USERS"
+	USER=$(do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_register -n)
+	echo "Registered as changelog user $USER"
+	$GET_CL_USERS | grep -q $USER ||
+		error "User $USER not found in changelog_users"
+
+	local LONGNAME1=$(str_repeat a 255)
+	local LONGNAME2=$(str_repeat b 255)
+
+	cd $DIR
+	echo "creating very long named file"
+	touch $LONGNAME1 || error "create of $LONGNAME1 failed"
+	echo "moving very long named file"
+	mv $LONGNAME1 $LONGNAME2
+
+	$LFS changelog $MDT0 | grep RENME
+
+	echo "deregistering $USER"
+	do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister $USER
+
+	rm -f $LONGNAME2
+}
+run_test 160b "Verify that very long rename doesn't crash in changelog"
 
 test_161a() {
 	[ $PARALLEL == "yes" ] && skip "skip parallel run" && return
@@ -9437,6 +9491,93 @@ test_161b() {
 	error "failed to unlink many hardlinks"
 }
 run_test 161b "link ea sanity under remote directory"
+
+test_161c() {
+	[ $PARALLEL == "yes" ] && skip "skip parallel run" && return
+	[[ $(lustre_version_code $SINGLEMDS) -lt $(version_code 2.1.5) ]] &&
+		skip "Need MDS version at least 2.1.5" && return
+
+	# define CLF_RENAME_LAST 0x0001
+	# rename overwrite a target having nlink = 1 (changelog flag 0x1)
+	local USER=$(do_facet $SINGLEMDS $LCTL --device $MDT0 \
+		changelog_register -n)
+	rm -rf $DIR/$tdir
+	mkdir -p $DIR/$tdir
+	touch $DIR/$tdir/foo_161c
+	touch $DIR/$tdir/bar_161c
+	mv -f $DIR/$tdir/foo_161c $DIR/$tdir/bar_161c
+	$LFS changelog $MDT0 | grep RENME
+	local flags=$($LFS changelog $MDT0 | grep RENME | tail -1 | \
+		cut -f5 -d' ')
+	$LFS changelog_clear $MDT0 $USER 0
+	if [ x$flags != "x0x1" ]; then
+		do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister \
+			$USER
+		error "flag $flags is not 0x1"
+	fi
+	echo "rename overwrite a target having nlink = 1," \
+		"changelog record has flags of $flags"
+
+	# rename overwrite a target having nlink > 1 (changelog flag 0x0)
+	touch $DIR/$tdir/foo_161c
+	touch $DIR/$tdir/bar_161c
+	ln $DIR/$tdir/bar_161c $DIR/$tdir/foobar_161c
+	mv -f $DIR/$tdir/foo_161c $DIR/$tdir/bar_161c
+	$LFS changelog $MDT0 | grep RENME
+	flags=$($LFS changelog $MDT0 | grep RENME | tail -1 | cut -f5 -d' ')
+	$LFS changelog_clear $MDT0 $USER 0
+	if [ x$flags != "x0x0" ]; then
+		do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister \
+			$USER
+		error "flag $flags is not 0x0"
+	fi
+	echo "rename overwrite a target having nlink > 1," \
+		"changelog record has flags of $flags"
+
+	# rename doesn't overwrite a target (changelog flag 0x0)
+	touch $DIR/$tdir/foo_161c
+	mv -f $DIR/$tdir/foo_161c $DIR/$tdir/foo2_161c
+	$LFS changelog $MDT0 | grep RENME
+	flags=$($LFS changelog $MDT0 | grep RENME | tail -1 | cut -f5 -d' ')
+	$LFS changelog_clear $MDT0 $USER 0
+	if [ x$flags != "x0x0" ]; then
+		do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister \
+			$USER
+		error "flag $flags is not 0x0"
+	fi
+	echo "rename doesn't overwrite a target," \
+		"changelog record has flags of $flags"
+
+	# define CLF_UNLINK_LAST 0x0001
+	# unlink a file having nlink = 1 (changelog flag 0x1)
+	rm -f $DIR/$tdir/foo2_161c
+	$LFS changelog $MDT0 | grep UNLNK
+	flags=$($LFS changelog $MDT0 | grep UNLNK | tail -1 | cut -f5 -d' ')
+	$LFS changelog_clear $MDT0 $USER 0
+	if [ x$flags != "x0x1" ]; then
+		do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister \
+			$USER
+		error "flag $flags is not 0x1"
+	fi
+	echo "unlink a file having nlink = 1," \
+		"changelog record has flags of $flags"
+
+	# unlink a file having nlink > 1 (changelog flag 0x0)
+	ln -f $DIR/$tdir/bar_161c $DIR/$tdir/foobar_161c
+	rm -f $DIR/$tdir/foobar_161c
+	$LFS changelog $MDT0 | grep UNLNK
+	flags=$($LFS changelog $MDT0 | grep UNLNK | tail -1 | cut -f5 -d' ')
+	$LFS changelog_clear $MDT0 $USER 0
+	if [ x$flags != "x0x0" ]; then
+		do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister \
+			$USER
+		error "flag $flags is not 0x0"
+	fi
+	echo "unlink a file having nlink > 1," \
+		"changelog record has flags of $flags"
+	do_facet $SINGLEMDS $LCTL --device $MDT0 changelog_deregister $USER
+}
+run_test 161c "check CL_RENME[UNLINK] changelog record flags"
 
 check_path() {
     local expected=$1
@@ -9633,6 +9774,15 @@ obdecho_test() {
 	local pages=${3:-64}
         local rc=0
         local id
+
+	local count=10
+	local obd_size=$(get_obd_size $node $OBD)
+	local page_size=$(get_page_size $node)
+	if [[ -n "$obd_size" ]]; then
+		local new_count=$((obd_size / (pages * page_size / 1024)))
+		[[ $new_count -ge $count ]] || count=$new_count
+	fi
+
         do_facet $node "$LCTL attach echo_client ec ec_uuid" || rc=1
         [ $rc -eq 0 ] && { do_facet $node "$LCTL --device ec setup $OBD" ||
                            rc=2; }
@@ -9644,7 +9794,7 @@ obdecho_test() {
 	[ $rc -eq 0 ] && { do_facet $node "$LCTL --device ec getattr $id" ||
 			   rc=4; }
 	[ $rc -eq 0 ] && { do_facet $node "$LCTL --device ec "		       \
-			   "test_brw 10 w v $pages $id" || rc=4; }
+			   "test_brw $count w v $pages $id" || rc=4; }
 	[ $rc -eq 0 ] && { do_facet $node "$LCTL --device ec destroy $id 1" ||
 			   rc=4; }
 	[ $rc -eq 0 -o $rc -gt 2 ] && { do_facet $node "$LCTL --device ec "    \
@@ -10547,14 +10697,15 @@ test_213() {
 run_test 213 "OSC lock completion and cancel race don't crash - bug 18829"
 
 test_214() { # for bug 20133
-	test_mkdir -p $DIR/d214p/d214c
+	mkdir -p $DIR/$tdir/d214c || error "mkdir $DIR/$tdir/d214c failed"
 	for (( i=0; i < 340; i++ )) ; do
-		touch $DIR/d214p/d214c/a$i
+		touch $DIR/$tdir/d214c/a$i
 	done
 
-	ls -l $DIR/d214p || error "ls -l $DIR/d214p failed"
-	mv $DIR/d214p/d214c $DIR/ || error "mv $DIR/d214p/d214c $DIR/ failed"
+	ls -l $DIR/$tdir || error "ls -l $DIR/d214p failed"
+	mv $DIR/$tdir/d214c $DIR/ || error "mv $DIR/d214p/d214c $DIR/ failed"
 	ls $DIR/d214c || error "ls $DIR/d214c failed"
+	rm -rf $DIR/$tdir || error "rm -rf $DIR/d214* failed"
 	rm -rf $DIR/d214* || error "rm -rf $DIR/d214* failed"
 }
 run_test 214 "hash-indexed directory test - bug 20133"
